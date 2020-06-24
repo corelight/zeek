@@ -1169,6 +1169,11 @@ WriterFrontend* Manager::CreateWriter(EnumVal* id, EnumVal* writer, WriterBacken
 			winfo->interval = f->interval;
 			winfo->postprocessor = f->postprocessor;
 
+			if ( f->postprocessor )
+				{
+				delete [] winfo->info->post_proc_func;
+				winfo->info->post_proc_func = copy_string(f->postprocessor->Name());
+				}
 
 			break;
 			}
@@ -1179,6 +1184,18 @@ WriterFrontend* Manager::CreateWriter(EnumVal* id, EnumVal* writer, WriterBacken
 		const auto& id = global_scope()->Find("Log::default_rotation_interval");
 		assert(id);
 		winfo->interval = id->GetVal()->AsInterval();
+
+		if ( winfo->info->post_proc_func &&
+		     strlen(winfo->info->post_proc_func) )
+			{
+			auto func = zeek::id::find_func(winfo->info->post_proc_func);
+
+			if ( func )
+				winfo->postprocessor = func.get();
+			else
+				reporter->Warning("failed log postprocessor function lookup: %s\n",
+				                  winfo->info->post_proc_func);
+			}
 		}
 
 	stream->writers.insert(
@@ -1465,23 +1482,32 @@ void Manager::InstallRotationTimer(WriterInfo* winfo)
 		}
 	}
 
+std::string Manager::FormatRotationTime(time_t t)
+	{
+	struct tm tm;
+	char buf[128];
+	const char* const date_fmt = "%y-%m-%d_%H.%M.%S";
+	localtime_r(&t, &tm);
+	strftime(buf, sizeof(buf), date_fmt, &tm);
+	return buf;
+	}
+
+std::string Manager::FormatRotationPath(std::string_view path, time_t t)
+	{
+	auto rot_str = FormatRotationTime(t);
+	return fmt("%.*s-%s",
+	           static_cast<int>(path.size()), path.data(), rot_str.data());
+	}
+
 void Manager::Rotate(WriterInfo* winfo)
 	{
 	DBG_LOG(DBG_LOGGING, "Rotating %s at %.6f",
 		winfo->writer->Name(), network_time);
 
 	// Build a temporary path for the writer to move the file to.
-	struct tm tm;
-	char buf[128];
-	const char* const date_fmt = "%y-%m-%d_%H.%M.%S";
-	time_t teatime = (time_t)winfo->open_time;
-
-	localtime_r(&teatime, &tm);
-	strftime(buf, sizeof(buf), date_fmt, &tm);
-
-	// Trigger the rotation.
-	const char* tmp = fmt("%s-%s", winfo->writer->Info().path, buf);
-	winfo->writer->Rotate(tmp, winfo->open_time, network_time, terminating);
+	auto tmp = FormatRotationPath(winfo->writer->Info().path,
+	                              (time_t)winfo->open_time);
+	winfo->writer->Rotate(tmp.data(), winfo->open_time, network_time, terminating);
 
 	++rotations_pending;
 	}
